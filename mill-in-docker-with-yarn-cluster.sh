@@ -158,5 +158,5 @@ docker run -t $(if [ "$INTERACTIVE" = 1 ]; then echo -i; fi) --rm \
   $(if [ ! -z ${SPARK_VERSION+x} ]; then echo "" -e SPARK_VERSION; fi) \
   -e INPUT_TXT_URL \
   -w /workspace \
-  openjdk:8u151-jdk \
+  eclipse-temurin:11 \
    /usr/local/bin/run.sh "$@"

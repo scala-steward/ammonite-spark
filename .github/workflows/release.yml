@@ -19,15 +19,10 @@ jobs:
       with:
         extraFiles: "[\".github/scripts/*\", \".github/workflows/ci.yml\", \"*.sh\"]"
         extraKey: "release"
-    - uses: coursier/setup-action@v3.0
-      with:
-        jvm: 8
-    - run: .github/scripts/gpg-setup.sh
+    - name: Release
+      run: ./mill -i mill.scalalib.SonatypeCentralPublishModule/
       env:
-        PGP_SECRET: ${{ secrets.PUBLISH_SECRET_KEY }}
-    - run: ./mill -i publishSonatype __.publishArtifacts
-      shell: bash
-      env:
-        PGP_PASSPHRASE: ${{ secrets.PUBLISH_SECRET_KEY_PASSWORD }}
-        SONATYPE_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}
-        SONATYPE_USERNAME: ${{ secrets.PUBLISH_USER }}
+        MILL_PGP_SECRET_BASE64: ${{ secrets.PUBLISH_SECRET_KEY }}
+        MILL_PGP_PASSPHRASE: ${{ secrets.PUBLISH_SECRET_KEY_PASSWORD }}
+        MILL_SONATYPE_USERNAME: ${{ secrets.PUBLISH_USER }}
+        MILL_SONATYPE_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}

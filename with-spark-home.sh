@@ -9,7 +9,7 @@ BASE="$(dirname "${BASH_SOURCE[0]}")"
 CACHE="${STANDALONE_CACHE:-"$BASE/target/standalone"}"
 mkdir -p "$CACHE"
 
-SPARK_STUBS_JAR="$(./mill show 'spark-stubs_24.jar' | jq -r . | sed 's/ref:[a-f0-9]*://')"
+SPARK_STUBS_JAR="$(./mill show 'spark-stubs_24.jar' | jq -r . | sed 's|^ref:[^/]*||')"
 
 # Fetch spark distrib
 if [ ! -d "$CACHE/spark-$SPARK_VERSION-"* ]; then
