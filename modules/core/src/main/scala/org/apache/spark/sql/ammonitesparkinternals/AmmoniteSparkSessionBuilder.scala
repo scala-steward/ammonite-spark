@@ -55,16 +55,123 @@ object AmmoniteSparkSessionBuilder {
     isJarFile || isJarInJar
   }
 
+  // The JVM application class loader exposes the launch class path via its URLs up
+  // to Java 8, but stopped being a URLClassLoader in Java 9+. The logic below walks
+  // the class loaders the way class-path-inspector does, so that we can still gather
+  // the base jars (e.g. the Ammonite / pprint jars the REPL closures need on the
+  // executors) on recent JVMs.
+  // Based on https://github.com/alexarchambault/class-path-inspector/blob/2f99036618e2b1e1939e557bf0f438b4978fccac/classpath/Inspector.scala
+
+  private lazy val builtinClassLoaderClass =
+    try Class.forName("jdk.internal.loader.BuiltinClassLoader")
+    catch {
+      case _: ClassNotFoundException => null
+    }
+
+  private lazy val isBuiltinClassLoader: ClassLoader => Boolean =
+    if (builtinClassLoaderClass == null)
+      _ => false
+    else
+      cl => builtinClassLoaderClass.isInstance(cl)
+
+  private lazy val tryGetUrls: ClassLoader => Option[Array[URL]] = {
+
+    // To work fine, this requires
+    //   --add-opens java.base/jdk.internal.loader=ALL-UNNAMED
+
+    // originally based on https://stackoverflow.com/questions/49557431/how-to-safely-access-the-urls-of-all-resource-files-in-the-classpath-in-java-9
+
+    val clazz =
+      try Class.forName("jdk.internal.loader.URLClassPath")
+      catch {
+        case _: ClassNotFoundException => null
+      }
+
+    val noop = (_: ClassLoader) => None
+
+    if (builtinClassLoaderClass != null && clazz != null) {
+      val ucpField =
+        try {
+          val f = builtinClassLoaderClass.getDeclaredField("ucp")
+          f.setAccessible(true)
+          f
+        }
+        catch {
+          case _: NoSuchFieldException =>
+            null
+          case e: Exception
+              if e.getClass.getName == "java.lang.reflect.InaccessibleObjectException" =>
+            null
+        }
+      val getURLs =
+        try clazz.getMethod("getURLs")
+        catch {
+          case _: NoSuchMethodException =>
+            null
+        }
+
+      if (ucpField != null && getURLs != null)
+        (cl: ClassLoader) =>
+          Option(ucpField.get(cl)).map(getURLs.invoke(_).asInstanceOf[Array[URL]])
+      else
+        noop
+    }
+    else
+      noop
+  }
+
+  private def expandClassPathEntry(entry: String): Seq[os.Path] =
+    if (entry.endsWith("/*")) {
+      val path = os.Path(entry.stripSuffix("/*"), os.pwd)
+      if (os.isDir(path)) os.list(path)
+      else Nil
+    }
+    else if (entry.endsWith("/*.jar")) {
+      val path = os.Path(entry.stripSuffix("/*"), os.pwd)
+      if (os.isDir(path)) os.list(path).filter(_.last.endsWith(".jar"))
+      else Nil
+    }
+    else {
+      val path = os.Path(entry, os.pwd)
+      if (os.exists(path)) Seq(path)
+      else Nil
+    }
+
+  private def expandClassPath(input: String): Seq[os.Path] =
+    input
+      .split(File.pathSeparator)
+      .toSeq
+      .filter(_.nonEmpty)
+      .flatMap(expandClassPathEntry)
+
   def classpath(cl: ClassLoader): Stream[java.net.URL] =
     if (cl == null)
       Stream()
     else {
-      val cp = cl match {
-        case u: java.net.URLClassLoader => u.getURLs.toStream
-        case _                          => Stream()
+      val urls = cl match {
+        case ucl: java.net.URLClassLoader =>
+          ucl.getURLs.toStream
+        case _ =>
+          val viaBuiltinOpt =
+            if (isBuiltinClassLoader(cl))
+              tryGetUrls(cl).map(_.toStream)
+            else
+              None
+          viaBuiltinOpt
+            .orElse {
+              if (cl.getClass.getName == "jdk.internal.loader.ClassLoaders$AppClassLoader")
+                Some {
+                  expandClassPath(sys.props.getOrElse("java.class.path", ""))
+                    .toStream
+                    .map(_.toNIO.toUri.toURL)
+                }
+              else
+                None
+            }
+            .getOrElse(Stream.empty)
       }
 
-      cp #::: classpath(cl.getParent)
+      urls #::: classpath(cl.getParent)
     }
 
   private lazy val javaDirs = {
