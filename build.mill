@@ -249,10 +249,37 @@ trait Core  extends CrossSbtModule with WithPropertyFile with AmmSparkPublishMod
   }
 }
 
+// All modules whose artifacts the tests need to resolve at runtime, via the
+// `import $ivy.`sh.almond::ammonite-spark:…`` in the embedded Ammonite REPL
+// (which also pulls the matching spark-stubs_* dynamically through coursier).
+def publishModules: Seq[AmmSparkPublishModule] =
+  Seq(`spark-stubs_24`, `spark-stubs_30`) ++
+    `spark-stubs_32`.crossModules ++
+    core.crossModules ++
+    `almond-spark`.crossModules ++
+    `almond-toree-spark`.crossModules
+
+// Gather the publishLocalTestRepo of every module into a single local Maven
+// repository, so tests can resolve the just-built artifacts without polluting
+// ~/.ivy2/local via publishLocal.
+def testRepo = Task {
+  val repoDirs = Task.traverse(publishModules)(_.publishLocalTestRepo)()
+  val dest     = Task.dest / "repo"
+  for (repo <- repoDirs)
+    os.copy(repo.path, dest, mergeFolders = true, replaceExisting = true, createFolders = true)
+  PathRef(dest)
+}
+
 trait AmmSparkTests extends TestModule {
   def testFramework = "utest.runner.Framework"
   def forkArgs =
     super.forkArgs() ++ Seq("-Xmx3g", "-Dfoo=bzz") ++ sparkAddOpens
+  def forkEnv = super.forkEnv() ++ Seq(
+    "COURSIER_REPOSITORIES" -> {
+      val repoUrl = testRepo().path.toNIO.toUri.toASCIIString
+      s"$repoUrl|central"
+    }
+  )
 }
 
 // Spark 3.x doesn't officially support Java 17 (only 8/11), so run the modules
