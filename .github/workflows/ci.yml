@@ -79,8 +79,5 @@ jobs:
       with:
         fetch-depth: 0
         submodules: true
-    - uses: coursier/setup-action@v3.0
-      with:
-        jvm: "temurin:17"
-        apps: scalafmt:3.0.0
-    - run: scalafmt --check
+    - uses: coursier/setup-action@v3
+    - run: cs launch scalafmt -- --check
