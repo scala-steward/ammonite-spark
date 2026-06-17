@@ -84,11 +84,18 @@ object Init {
 
   def end = "@ spark.sparkContext.stop()"
 
-  def setupLog4j(): Unit =
+  def setupLog4j(): Unit = {
+    // Set SPARK_LOG_CONSOLE to also get the Spark logs on the console (at INFO
+    // level), which helps debugging the tests. By default, logs only go to the
+    // spark.log file.
+    val resource =
+      if (sys.env.contains("SPARK_LOG_CONSOLE")) "log4j-console.properties"
+      else "log4j.properties"
     sys.props("log4j.configuration") = Thread.currentThread()
       .getContextClassLoader
-      .getResource("log4j.properties")
+      .getResource(resource)
       .toURI
       .toASCIIString
+  }
 
 }

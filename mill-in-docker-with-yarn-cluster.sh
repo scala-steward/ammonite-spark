@@ -156,6 +156,7 @@ docker run -t $(if [ "$INTERACTIVE" = 1 ]; then echo -i; fi) --rm \
   -v "$(pwd):/workspace" \
   $(if [ ! -z ${SPARK_HOME+x} ]; then echo "" -e SPARK_HOME=/spark -v "$SPARK_HOME:/spark"; fi) \
   $(if [ ! -z ${SPARK_VERSION+x} ]; then echo "" -e SPARK_VERSION; fi) \
+  $(if [ ! -z ${SPARK_LOG_CONSOLE+x} ]; then echo "" -e SPARK_LOG_CONSOLE; fi) \
   -e INPUT_TXT_URL \
   -w /workspace \
   eclipse-temurin:11 \

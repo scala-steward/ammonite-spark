@@ -19,3 +19,14 @@ Run the tests against a YARN cluster _using a provided spark distribution_ with
 $ ./with-spark-home.sh ./mill-in-docker-with-yarn-cluster.sh yarn-spark-distrib-tests.test
 ```
 Note that Mill is run inside a docker container in the last two cases. These commands starts a dockerized single-node YARN cluster, and shut it down upon exit.
+
+## Spark logs
+
+By default, the tests only write the Spark logs to a `spark.log` file. To also
+get them on the console (at `INFO` level), which helps debugging, set the
+`SPARK_LOG_CONSOLE` environment variable, e.g.
+```
+$ SPARK_LOG_CONSOLE=1 ./mill 'tests[_].test'
+$ SPARK_LOG_CONSOLE=1 ./mill-in-docker-with-yarn-cluster.sh 'yarn-tests[_].test'
+```
+The variable is forwarded into the docker container for the YARN tests.
