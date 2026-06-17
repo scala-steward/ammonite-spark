@@ -22,7 +22,7 @@ class ProgressBarTests(sparkVersion: String, master: String, conf: (String, Stri
 
   val tests = Tests {
 
-    "dummy test" - {
+    test("dummy test") {
       sparkSession(
         if (interactive)
           """

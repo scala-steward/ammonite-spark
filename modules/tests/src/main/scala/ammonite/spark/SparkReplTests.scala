@@ -66,7 +66,7 @@ class SparkReplTests(
     // Beware that indentation of the session snippets is super sensitive.
     // All snippets should have the exact same indentation.
 
-    "simple foreach with accumulator" - {
+    test("simple foreach with accumulator") {
       sparkSession(
         """
             @ val accum = sc.longAccumulator
@@ -80,7 +80,7 @@ class SparkReplTests(
       )
     }
 
-    "external vars" - {
+    test("external vars") {
       sparkSession(
         """
             @ var v = 7
@@ -97,7 +97,7 @@ class SparkReplTests(
       )
     }
 
-    "external classes" - {
+    test("external classes") {
       sparkSession(
         """
             @ class C {
@@ -111,7 +111,7 @@ class SparkReplTests(
       )
     }
 
-    "external functions" - {
+    test("external functions") {
       sparkSession(
         """
             @ def double(x: Int) = x + x
@@ -123,7 +123,7 @@ class SparkReplTests(
       )
     }
 
-    "external functions that access vars" - {
+    test("external functions that access vars") {
       sparkSession(
         """
             @ var v = 7
@@ -146,7 +146,7 @@ class SparkReplTests(
     def hasBroadcastIssue =
       master == "local" || master.startsWith("local[")
 
-    "broadcast vars" - {
+    test("broadcast vars") {
       // This test doesn't behave the right way in local mode, even in the original spark repl
       // (https://github.com/apache/spark/blob/181261a81d592b93181135a8267570e0c9ab2243/repl/scala-2.11/src/test/scala/org/apache/spark/repl/ReplSuite.scala#L219),
       // because of the way broadcasts work in local mode it seems.
@@ -177,7 +177,7 @@ class SparkReplTests(
       )
     }
 
-    "interacting with files" - {
+    test("interacting with files") {
       inputUrlOpt match {
         case None =>
           println("input file not available, not running test")
@@ -199,7 +199,7 @@ class SparkReplTests(
       }
     }
 
-    "SPARK-1199 two instances of same class don't type check" - {
+    test("SPARK-1199 two instances of same class don't type check") {
       val expFieldNamePart  = if (is212) "" else "exp = "
       val exp2FieldNamePart = if (is212) "" else "exp2 = "
       sparkSession(
@@ -219,7 +219,7 @@ class SparkReplTests(
       )
     }
 
-    "SPARK-2452 compound statements" - {
+    test("SPARK-2452 compound statements") {
       sparkSession(
         """
             @ val x = 4 ; def f() = x
@@ -232,7 +232,7 @@ class SparkReplTests(
       )
     }
 
-    "SPARK-2576 importing implicits" - {
+    test("SPARK-2576 importing implicits") {
       val fieldNamePart = if (is212) "" else "value = "
       // FIXME The addOuterScope should be automatically added. (Tweak CodeClassWrapper for that?)
       sparkSession(
@@ -252,7 +252,7 @@ class SparkReplTests(
       )
     }
 
-    "Datasets and encoders" - {
+    test("Datasets and encoders") {
       sparkSession(
         """
             @ import spark.implicits._
@@ -288,7 +288,7 @@ class SparkReplTests(
       )
     }
 
-    "SPARK-2632 importing a method from non serializable class and not using it" - {
+    test("SPARK-2632 importing a method from non serializable class and not using it") {
       val fieldNamePart = if (is212) "" else "value = "
       sparkSession(
         s"""
@@ -321,7 +321,7 @@ class SparkReplTests(
       )
     }
 
-    "collecting objects of class defined in repl" - {
+    test("collecting objects of class defined in repl") {
       val fieldNamePart = if (is212) "" else "i = "
       sparkSession(
         s"""
@@ -345,7 +345,7 @@ class SparkReplTests(
       )
     }
 
-    "collecting objects of class defined in repl - shuffling" - {
+    test("collecting objects of class defined in repl - shuffling") {
       val fieldNamePart = if (is212) "" else "i = "
       sparkSession(
         s"""
@@ -361,8 +361,7 @@ class SparkReplTests(
       )
     }
 
-    "replicating blocks of object with class defined in repl" - {
-
+    test("replicating blocks of object with class defined in repl") {
       // FIXME The actual test also does https://github.com/apache/spark/blob/ab18b02e66fd04bc8f1a4fb7b6a7f2773902a494/repl/src/test/scala/org/apache/spark/repl/SingletonReplSuite.scala#L353-L359
 
       sparkSession(
@@ -389,7 +388,7 @@ class SparkReplTests(
       )
     }
 
-    "should clone and clean line object in ClosureCleaner" - {
+    test("should clone and clean line object in ClosureCleaner") {
       inputUrlOpt match {
         case None =>
           println("input file not available, not running test")
@@ -430,7 +429,7 @@ class SparkReplTests(
       }
     }
 
-    "newProductSeqEncoder with REPL defined class" - {
+    test("newProductSeqEncoder with REPL defined class") {
       sparkSession(
         """
             @ case class Click(id: Int)
@@ -443,7 +442,7 @@ class SparkReplTests(
     }
 
     // Adapted from https://github.com/apache/spark/blob/3d5c61e5fd24f07302e39b5d61294da79aa0c2f9/repl/src/test/scala/org/apache/spark/repl/ReplSuite.scala#L193-L208
-    "line wrapper only initialized once when used as encoder outer scope" - {
+    test("line wrapper only initialized once when used as encoder outer scope") {
       val fieldNamePart = if (is212) "" else "value = "
       sparkSession(
         s"""
@@ -488,7 +487,7 @@ class SparkReplTests(
     }
 
     // Adapted from https://github.com/apache/spark/blob/3d5c61e5fd24f07302e39b5d61294da79aa0c2f9/repl/src/test/scala/org/apache/spark/repl/ReplSuite.scala#L230-L238
-    "spark-shell should find imported types in class constructors and extends clause" - {
+    test("spark-shell should find imported types in class constructors and extends clause") {
       sparkSession(
         """
             @ import org.apache.spark.Partition
@@ -504,7 +503,7 @@ class SparkReplTests(
     }
 
     // https://github.com/apache/spark/blob/3d5c61e5fd24f07302e39b5d61294da79aa0c2f9/repl/src/test/scala/org/apache/spark/repl/ReplSuite.scala#L240-L259
-    "spark-shell should shadow val/def definitions correctly" - {
+    test("spark-shell should shadow val/def definitions correctly") {
       sparkSession(
         """
             @ def myMethod() = "first definition"
@@ -543,7 +542,7 @@ class SparkReplTests(
 
     // tests below are custom ones
 
-    "algebird" - {
+    test("algebird") {
       if (scala.util.Properties.versionNumberString.startsWith("2.12."))
         sparkSession(
           """
