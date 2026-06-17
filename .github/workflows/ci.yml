@@ -24,26 +24,14 @@ jobs:
       with:
         fetch-depth: 0
         submodules: true
-    - uses: coursier/cache-action@v8.1
+    - uses: coursier/cache-action@v8
       with:
         extraFiles: "[\".github/scripts/*\", \".github/workflows/ci.yml\", \"*.sh\"]"
         extraKey: test-${{ matrix.MASTER }}
-    - uses: coursier/setup-action@v3.0
-      with:
-        jvm: 8
     - run: .github/scripts/test.sh
       shell: bash
       env:
         MASTER: ${{ matrix.MASTER }}
-
-  # job whose name doesn't change when we bump Scala versions, add OSes, …
-  # We require this job for auto-merge.
-  all-tests:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-    - run: true
-      shell: bash
 
   checks:
     timeout-minutes: 10
@@ -53,10 +41,6 @@ jobs:
       with:
         fetch-depth: 0
         submodules: true
-    - uses: coursier/setup-action@v3.0
-      with:
-        jvm: "temurin:17"
-        apps: scalafmt:3.0.0
     - name: Empty sources, orphan sources, missing test classes checks
       run: ./mill -i --import io.github.alexarchambault.mill::mill-checks:0.1.2 io.github.alexarchambault.millchecks.MillChecks/allChecks
       env:
