@@ -7,9 +7,9 @@ case "${MASTER:-"local"}" in
     ./mill __.mimaReportBinaryIssues
     ;;
   local-distrib)
-    ./with-spark-home.sh ./mill 'local-spark-distrib-tests.test' ;;
+    ./mill local-spark-distrib-tests.test ;;
   standalone)
-    ./with-spark-home.sh ./mill-with-standalone-cluster.sh 'standalone-tests.test' ;;
+    ./mill standalone-tests.test ;;
   yarn)
     ./mill-in-docker-with-yarn-cluster.sh 'yarn-tests[_].test' ;;
   yarn-distrib)
