@@ -289,15 +289,40 @@ def sparkHome = Task {
   PathRef(sparkDir)
 }
 
+// Spark 2.4 only runs on Java 8, while the Mill build itself runs on a newer
+// JVM. Fetch a JDK 8 through the coursier-jvm API so the standalone master and
+// worker scripts (which honour JAVA_HOME) launch with the right JVM.
+def java8Home = Task {
+  val fileCache = coursier.cache.FileCache()
+  val jvmCache = coursier.jvm.JvmCache()
+    .withArchiveCache(coursier.cache.ArchiveCache().withCache(fileCache))
+    .withDefaultIndex
+  val javaHome = coursier.jvm.JavaHome().withCache(jvmCache)
+  val home     = javaHome.get("8").unsafeRun()(using fileCache.ec)
+  PathRef(os.Path(home.getAbsolutePath))
+}
+
+// Env to run a subprocess under the fetched JDK 8: JAVA_HOME pointing at it, and
+// its bin/ prepended to PATH (os.proc propagates the parent env by default).
+private def java8Env(java8: os.Path): Map[String, String] =
+  Map(
+    "JAVA_HOME" -> java8.toString,
+    "PATH"      -> s"${java8 / "bin"}${java.io.File.pathSeparator}${sys.env.getOrElse("PATH", "")}"
+  )
+
 // Host the standalone cluster binds to
 def standaloneClusterHost = "localhost"
 
 // Handle on a running Spark standalone master. `master` is the SPARK_MASTER URL;
 // close() stops the master.
-class SparkMasterHandle(home: os.Path, val master: String) extends AutoCloseable {
+class SparkMasterHandle(
+  home: os.Path,
+  val master: String,
+  extraEnv: Map[String, String]
+) extends AutoCloseable {
   private def close0(check: Boolean = true): Unit =
     os.proc(home / "sbin" / "stop-master.sh")
-      .call(cwd = home, check = check, stdin = os.Inherit, stdout = os.Inherit)
+      .call(cwd = home, env = extraEnv, check = check, stdin = os.Inherit, stdout = os.Inherit)
   def tryClose(): Unit =
     close0(check = false)
   def close(): Unit =
@@ -305,10 +330,13 @@ class SparkMasterHandle(home: os.Path, val master: String) extends AutoCloseable
 }
 
 // Handle on a running Spark standalone worker (slave); close() stops it.
-class SparkSlaveHandle(home: os.Path) extends AutoCloseable {
+class SparkSlaveHandle(
+  home: os.Path,
+  extraEnv: Map[String, String]
+) extends AutoCloseable {
   private def close0(check: Boolean = true): Unit =
     os.proc(home / "sbin" / "stop-slave.sh")
-      .call(cwd = home, check = check, stdin = os.Inherit, stdout = os.Inherit)
+      .call(cwd = home, env = extraEnv, check = check, stdin = os.Inherit, stdout = os.Inherit)
   def tryClose(): Unit =
     close0(check = false)
   def close(): Unit =
@@ -320,10 +348,11 @@ def sparkMaster = Task.Worker {
   val home      = sparkHome().path
   val host      = standaloneClusterHost
   val masterUrl = s"spark://$host:7077"
-  val handle    = new SparkMasterHandle(home, masterUrl)
+  val env       = java8Env(java8Home().path)
+  val handle    = new SparkMasterHandle(home, masterUrl, env)
   handle.tryClose()
   os.proc(home / "sbin" / "start-master.sh", "--host", host)
-    .call(cwd = home, stdin = os.Inherit, stdout = os.Inherit)
+    .call(cwd = home, env = env, stdin = os.Inherit, stdout = os.Inherit)
   handle
 }
 
@@ -332,10 +361,11 @@ def sparkSlave = Task.Worker {
   val home   = sparkHome().path
   val host   = standaloneClusterHost
   val master = sparkMaster().master
-  val handle = new SparkSlaveHandle(home)
+  val env    = java8Env(java8Home().path)
+  val handle = new SparkSlaveHandle(home, env)
   handle.tryClose()
   os.proc(home / "sbin" / "start-slave.sh", "--host", host, master, "-c", "4", "-m", "4g")
-    .call(cwd = home, stdin = os.Inherit, stdout = os.Inherit)
+    .call(cwd = home, env = env, stdin = os.Inherit, stdout = os.Inherit)
   handle
 }
 
