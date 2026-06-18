@@ -1,0 +1,587 @@
+//| mill-version: 1.1.5-25-21a88e
+//| mill-jvm-version: 17
+
+package build
+
+import com.github.lolgab.mill.mima.Mima
+import mill.*
+import mill.api.*
+import mill.scalalib.*
+import mill.util.VcsVersion
+
+import java.util.Arrays
+
+import scala.concurrent.duration.DurationInt
+
+lazy val millDiscover0         = Discover[this.type]
+override lazy val millDiscover = millDiscover0
+
+// Tell mill modules are under modules/
+implicit def millModuleBasePath: ModuleCtx.Nested =
+  MillCsHelper.moduleCtxWithDiscoverAndEnclosingModule(
+    ModuleCtx.makeRoot(
+      implicitly,
+      implicitly,
+      BuildCtx.workspaceRoot / "modules",
+      Segments(),
+      false,
+      implicitly
+    ),
+    millDiscover0,
+    this
+  )
+
+object Versions {
+  def scala212 = "2.12.11"
+  def scala213 = "2.13.11"
+
+  def scala = Seq(scala213, scala212)
+
+  def almond        = "0.14.0-RC13"
+  def ammonite      = "3.0.0-M0-67-83057fea"
+  def jsoniterScala = "2.13.5"
+}
+
+object Deps {
+  def almondToreeHooks = mvn"sh.almond::toree-hooks:${Versions.almond}"
+  def ammoniteCompiler = mvn"sh.almond.tmp.ammonite:::ammonite-compiler:${Versions.ammonite}"
+  def ammoniteReplApi  = mvn"sh.almond.tmp.ammonite:::ammonite-repl-api:${Versions.ammonite}"
+  def ammoniteRepl     = mvn"sh.almond.tmp.ammonite:::ammonite-repl:${Versions.ammonite}"
+
+  def classPathUtil = mvn"io.get-coursier::class-path-util:0.1.4"
+  def jettyServer   = mvn"org.eclipse.jetty:jetty-server:9.4.58.v20250814"
+  def jsoniterScalaCore =
+    mvn"com.github.plokhotnyuk.jsoniter-scala::jsoniter-scala-core:${Versions.jsoniterScala}"
+  def jsoniterScalaMacros =
+    mvn"com.github.plokhotnyuk.jsoniter-scala::jsoniter-scala-macros:${Versions.jsoniterScala}"
+  def log4j2 = mvn"org.apache.logging.log4j:log4j-core:2.17.2"
+  // slf4j -> log4j 1.x binding, matching the log4j.properties used by the tests.
+  // Having it on the tests classpath ensures slf4j binds to log4j at startup,
+  // rather than to the NOP logger - in particular for the spark-distrib tests,
+  // where Spark (and its own slf4j binding) is only loaded later from SPARK_HOME.
+  def slf4jLog4j12   = mvn"org.slf4j:slf4j-log4j12:1.7.36"
+  def scalaKernelApi = mvn"sh.almond:::scala-kernel-api:${Versions.almond}"
+  def scalatags      = mvn"com.lihaoyi::scalatags:0.12.0"
+  def sparkSql(sv: String) = {
+    val ver =
+      if (sv.startsWith("2.12.")) "2.4.0"
+      else "3.2.0"
+    mvn"org.apache.spark::spark-sql:$ver"
+  }
+  def sparkSql3  = mvn"org.apache.spark::spark-sql:3.0.0"
+  def sparkSql32 = mvn"org.apache.spark::spark-sql:3.2.0"
+  def utest      = mvn"com.lihaoyi::utest:0.8.9"
+}
+
+trait AmmSparkPublishModule extends PublishModule {
+  import mill.scalalib.publish.*
+  def publishVersion =
+    sys.env.get("AMMONITE_SPARK_FORCED_VERSION") match {
+      case Some(forcedVersion) => Task(forcedVersion)
+      case None =>
+        Task {
+          val v        = VcsVersion.vcsState().format()
+          val dirtyIdx = v.indexOf("-DIRTY")
+          def endsWithCommitHash = v.length > 6 &&
+            v.substring(v.length - 6).forall(c => c.isDigit || (c >= 'a' && c <= 'f'))
+          if (dirtyIdx >= 0) v.take(dirtyIdx) + "-SNAPSHOT"
+          else if (endsWithCommitHash) v + "-SNAPSHOT"
+          else v
+        }
+    }
+  def pomSettings = PomSettings(
+    description = artifactName(),
+    organization = "sh.almond",
+    url = "https://github.com/alexarchambault/ammonite-spark.git",
+    licenses = Seq(License.MIT),
+    versionControl = VersionControl.github("alexarchambault", "ammonite-spark"),
+    developers = Seq(
+      Developer("alexarchambault", "Alex Archambault", "https://github.com/alexarchambault")
+    )
+  )
+  override def javacOptions = Task {
+    super.javacOptions() ++ Seq("--release", "8")
+  }
+}
+
+trait AmmSparkMima extends PublishModule with Mima {
+  // same as https://github.com/lolgab/mill-mima/blob/de28f3e9fbe92867f98e35f8dfd3c3a777cc033d/mill-mima/src/com/github/lolgab/mill/mima/Mima.scala#L29-L44
+  // except we're ok if mimaPreviousVersions is empty
+  def mimaPreviousArtifacts = Task {
+    val versions = mimaPreviousVersions().distinct
+    mill.api.Result.Success(
+      versions.map(version =>
+        mvn"${pomSettings().organization}:${artifactId()}:$version"
+      )
+    )
+  }
+}
+
+private def commitHash(): String =
+  sys.env.getOrElse(
+    "AMMONITE_SPARK_FORCED_COMMIT_HASH",
+    os.proc("git", "rev-parse", "HEAD")
+      .call(cwd = BuildCtx.workspaceRoot).out.trim()
+  )
+
+trait WithPropertyFile extends JavaModule {
+  def versionInProperties: T[String]
+  def propertyFilePath: os.SubPath
+  def propResourcesDir = Task(persistent = true) {
+    import sys.process._
+
+    val dir = Task.dest / "property-resources"
+    val ver = versionInProperties()
+
+    val f = dir / propertyFilePath
+
+    val contentStr =
+      s"""commit-hash=${commitHash()}
+         |version=$ver
+         |""".stripMargin
+
+    val content = contentStr.getBytes("UTF-8")
+
+    if (!os.exists(f) || !Arrays.equals(content, os.read.bytes(f))) {
+      os.write.over(f, content, createFolders = true)
+      System.err.println(s"Wrote $f")
+    }
+
+    PathRef(dir)
+  }
+  def resources = Task {
+    super.resources() ++ Seq(propResourcesDir())
+  }
+}
+
+trait WithDependencyResourceFile extends JavaModule {
+  def dependencyResourcePath: os.SubPath
+
+  def dependencyFileResources = Task {
+
+    val res = millResolver().resolution(Seq(coursierDependencyTask()))
+
+    val dir  = Task.dest / "dep-file"
+    val dest = dir / dependencyResourcePath
+
+    val content = res.minDependencies.toSeq
+      .map { dep =>
+        (dep.module.organization.value, dep.module.name.value, dep.versionConstraint.asString)
+      }
+      .sorted
+      .map {
+        case (org, name, ver) =>
+          s"$org:$name:$ver"
+      }
+      .mkString("\n")
+      .getBytes("UTF-8")
+
+    if (!os.exists(dest) || !Arrays.equals(content, os.read.bytes(dest))) {
+      os.write.over(dest, content, createFolders = true)
+      System.err.println(s"Wrote $dest")
+    }
+
+    Seq(PathRef(dir))
+  }
+
+  def resources = Task {
+    super.resources() ++ dependencyFileResources()
+  }
+}
+
+object `spark-stubs_24` extends SbtModule with AmmSparkPublishModule {
+  def scalaVersion = Versions.scala212
+  def mvnDeps = super.mvnDeps() ++ Seq(
+    Deps.sparkSql(scalaVersion())
+  )
+}
+
+object `spark-stubs_30` extends SbtModule with AmmSparkPublishModule {
+  def scalaVersion = Versions.scala212
+  def mvnDeps = super.mvnDeps() ++ Seq(
+    Deps.sparkSql3
+  )
+}
+
+object `spark-stubs_32` extends Cross[SparkStubs32](Versions.scala)
+trait SparkStubs32 extends CrossSbtModule with AmmSparkPublishModule {
+  def mvnDeps = super.mvnDeps() ++ Seq(
+    Deps.sparkSql32
+  )
+}
+
+object core extends Cross[Core](Versions.scala)
+trait Core  extends CrossSbtModule with WithPropertyFile with AmmSparkPublishModule
+    with AmmSparkMima {
+  def artifactName = "ammonite-spark"
+  def compileMvnDeps = super.compileMvnDeps() ++ Seq(
+    Deps.ammoniteReplApi,
+    Deps.sparkSql(scalaVersion())
+  )
+  def mvnDeps = super.mvnDeps() ++ Seq(
+    Deps.classPathUtil,
+    Deps.jettyServer
+  )
+  def propertyFilePath =
+    os.sub / "org/apache/spark/sql/ammonitesparkinternals/ammonite-spark.properties"
+  def versionInProperties = publishVersion()
+  def propResourcesDir = Task(persistent = true) {
+    import sys.process._
+
+    val dir = Task.dest / "property-resources"
+    val ver = publishVersion()
+
+    val f =
+      dir / "org/apache/spark/sql/ammonitesparkinternals/ammonite-spark.properties"
+
+    val contentStr =
+      s"""commit-hash=${commitHash()}
+         |version=$ver
+         |""".stripMargin
+
+    val content           = contentStr.getBytes("UTF-8")
+    val currentContentOpt = if (os.exists(f)) Some(os.read.bytes(f)) else None
+
+    if (!os.exists(f) || !Arrays.equals(content, os.read.bytes(f))) {
+      os.write.over(f, content, createFolders = true)
+      System.err.println(s"Wrote $f")
+    }
+
+    PathRef(dir)
+  }
+  def resources = Task {
+    super.resources() ++ Seq(propResourcesDir())
+  }
+
+  def mimaPreviousVersions = Task {
+    val needs =
+      if (scalaVersion().startsWith("2.12.")) "v0.9.0"
+      else "v0.13.0"
+    os.proc("git", "tag", "--merged", "HEAD^", "--contains", needs)
+      .call()
+      .out.lines()
+      .map(_.trim)
+      .filter(_.startsWith("v"))
+      .map(_.stripPrefix("v"))
+  }
+}
+
+// Spark version used to build the local distribution and run the standalone
+// cluster tasks below. Only 2.4 version published with Scala 2.12.
+def sparkVersion = Task("2.4.2")
+
+// Build a local Spark distribution and return its SPARK_HOME.
+// Download a lightweight Spark distrib, run its jar-fetching script, then
+// drop Spark's REPL jar in favour of our stubs.
+def sparkHome = Task {
+  val ver = sparkVersion()
+  val url =
+    "https://github.com/scala-cli/lightweight-spark-distrib/releases/download/v0.0.4/" +
+      s"spark-$ver-bin-hadoop2.7-scala2.12.tgz"
+
+  val cache    = coursier.cache.FileCache()
+  val artifact = coursier.util.Artifact(url)
+  val archive = cache.file(artifact).run.unsafeRun(true)(using cache.ec) match {
+    case Left(err)   => throw new Exception(s"Error downloading $url: ${err.describe}", err)
+    case Right(file) => os.Path(file)
+  }
+
+  os.proc("tar", "-zxf", archive)
+    .call(cwd = Task.dest, stdin = os.Inherit, stdout = os.Inherit)
+
+  val sparkDir = os.list(Task.dest)
+    .filter(os.isDir)
+    .find(_.last.startsWith(s"spark-$ver-"))
+    .getOrElse(sys.error(s"No spark-$ver-* directory found after extracting $archive"))
+
+  // The lightweight distrib only ships a script that downloads the actual jars.
+  os.proc(sparkDir / "fetch-jars.sh")
+    .call(cwd = sparkDir, stdin = os.Inherit, stdout = os.Inherit)
+
+  // Drop Spark's own REPL jar and use our stubs in its place.
+  for (jar <- os.list(sparkDir / "jars") if jar.last.startsWith("spark-repl_"))
+    os.remove(jar)
+  os.copy.into(`spark-stubs_24`.jar().path, sparkDir / "jars")
+
+  PathRef(sparkDir)
+}
+
+// Spark 2.4 only runs on Java 8, while the Mill build itself runs on a newer
+// JVM. Fetch a JDK 8 through the coursier-jvm API so the standalone master and
+// worker scripts (which honour JAVA_HOME) launch with the right JVM.
+def java8Home = Task {
+  val fileCache = coursier.cache.FileCache()
+  val jvmCache = coursier.jvm.JvmCache()
+    .withArchiveCache(coursier.cache.ArchiveCache().withCache(fileCache))
+    .withDefaultIndex
+  val javaHome = coursier.jvm.JavaHome().withCache(jvmCache)
+  val home     = javaHome.get("8").unsafeRun()(using fileCache.ec)
+  PathRef(os.Path(home.getAbsolutePath))
+}
+
+// Env to run a subprocess under the fetched JDK 8: JAVA_HOME pointing at it, and
+// its bin/ prepended to PATH (os.proc propagates the parent env by default).
+private def java8Env(java8: os.Path): Map[String, String] =
+  Map(
+    "JAVA_HOME" -> java8.toString,
+    "PATH"      -> s"${java8 / "bin"}${java.io.File.pathSeparator}${sys.env.getOrElse("PATH", "")}"
+  )
+
+// Host the standalone cluster binds to
+def standaloneClusterHost = "localhost"
+
+// Handle on a running Spark standalone master. `master` is the SPARK_MASTER URL;
+// close() stops the master.
+class SparkMasterHandle(
+  home: os.Path,
+  val master: String,
+  extraEnv: Map[String, String]
+) extends AutoCloseable {
+  private def close0(check: Boolean = true): Unit =
+    os.proc(home / "sbin" / "stop-master.sh")
+      .call(cwd = home, env = extraEnv, check = check, stdin = os.Inherit, stdout = os.Inherit)
+  def tryClose(): Unit =
+    close0(check = false)
+  def close(): Unit =
+    close0()
+}
+
+// Handle on a running Spark standalone worker (slave); close() stops it.
+class SparkSlaveHandle(
+  home: os.Path,
+  extraEnv: Map[String, String]
+) extends AutoCloseable {
+  private def close0(check: Boolean = true): Unit =
+    os.proc(home / "sbin" / "stop-slave.sh")
+      .call(cwd = home, env = extraEnv, check = check, stdin = os.Inherit, stdout = os.Inherit)
+  def tryClose(): Unit =
+    close0(check = false)
+  def close(): Unit =
+    close0()
+}
+
+// Start a Spark standalone master against the local distribution
+def sparkMaster = Task.Worker {
+  val home      = sparkHome().path
+  val host      = standaloneClusterHost
+  val masterUrl = s"spark://$host:7077"
+  val env       = java8Env(java8Home().path)
+  val handle    = new SparkMasterHandle(home, masterUrl, env)
+  handle.tryClose()
+  os.proc(home / "sbin" / "start-master.sh", "--host", host)
+    .call(cwd = home, env = env, stdin = os.Inherit, stdout = os.Inherit)
+  handle
+}
+
+// Start a Spark standalone worker (slave) attached to sparkMaster
+def sparkSlave = Task.Worker {
+  val home   = sparkHome().path
+  val host   = standaloneClusterHost
+  val master = sparkMaster().master
+  val env    = java8Env(java8Home().path)
+  val handle = new SparkSlaveHandle(home, env)
+  handle.tryClose()
+  os.proc(home / "sbin" / "start-slave.sh", "--host", host, master, "-c", "4", "-m", "4g")
+    .call(cwd = home, env = env, stdin = os.Inherit, stdout = os.Inherit)
+  handle
+}
+
+// All modules whose artifacts the tests need to resolve at runtime, via the
+// `import $ivy.`sh.almond::ammonite-spark:…`` in the embedded Ammonite REPL
+// (which also pulls the matching spark-stubs_* dynamically through coursier).
+def publishModules: Seq[AmmSparkPublishModule] =
+  Seq(`spark-stubs_24`, `spark-stubs_30`) ++
+    `spark-stubs_32`.crossModules ++
+    core.crossModules ++
+    `almond-spark`.crossModules ++
+    `almond-toree-spark`.crossModules
+
+// Gather the publishLocalTestRepo of every module into a single local Maven
+// repository, so tests can resolve the just-built artifacts without polluting
+// ~/.ivy2/local via publishLocal.
+def testRepo = Task {
+  val repoDirs = Task.traverse(publishModules)(_.publishLocalTestRepo)()
+  val dest     = Task.dest / "repo"
+  for (repo <- repoDirs)
+    os.copy(repo.path, dest, mergeFolders = true, replaceExisting = true, createFolders = true)
+  PathRef(dest)
+}
+
+trait RunClasspathAsJars extends JavaModule {
+  // ammonite-spark ships the REPL's runtime classpath to the Spark executors via
+  // sc.addJar, which only accepts JARs - directory entries are rejected with
+  // "Failed to add file:.../classes/ to Spark environment". Repackage every
+  // directory on the run classpath into a JAR so the whole classpath is JARs.
+  def runClasspath = Task {
+    super.runClasspath().zipWithIndex.map {
+      case (ref, idx) =>
+        if (os.isDir(ref.path)) {
+          val jar = Task.dest / s"run-$idx-${ref.path.last}.jar"
+          mill.util.Jvm.createJar(jar, Seq(ref.path))
+          PathRef(jar)
+        }
+        else
+          ref
+    }
+  }
+}
+
+trait AmmSparkTests extends TestModule {
+  def testFramework = "utest.runner.Framework"
+  def forkArgs =
+    super.forkArgs() ++ Seq("-Xmx3g", "-Dfoo=bzz") ++ sparkAddOpens
+  def forkEnv = super.forkEnv() ++ Seq(
+    "COURSIER_REPOSITORIES" -> {
+      val repoUrl = testRepo().path.toNIO.toUri.toASCIIString
+      s"$repoUrl|central"
+    }
+  )
+}
+
+// Spark 3.x doesn't officially support Java 17 (only 8/11), so run the modules
+// hosting Spark tests - and their forked tests, which inherit javaHome from their
+// enclosing module - on Java 11. The Mill build itself runs on Java 17, and Mill 1
+// can't fork tests on Java 8 (its test bootstrap relies on java.lang.ProcessHandle).
+trait SparkTestsJvm extends JavaModule {
+  def jvmId = "temurin:11"
+}
+
+// Spark accesses JDK internals that the module system locks down since Java 9, so
+// it needs these --add-opens to run on Java 11+ (Spark itself only started passing
+// them automatically in 3.3).
+def sparkAddOpens = Seq(
+  "-XX:+IgnoreUnrecognizedVMOptions",
+  "--add-opens=java.base/java.lang=ALL-UNNAMED",
+  "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+  "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+  "--add-opens=java.base/java.io=ALL-UNNAMED",
+  "--add-opens=java.base/java.net=ALL-UNNAMED",
+  "--add-opens=java.base/java.nio=ALL-UNNAMED",
+  "--add-opens=java.base/java.util=ALL-UNNAMED",
+  "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+  "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+  "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+  "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
+  "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
+  "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
+  "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
+)
+
+object tests extends Cross[Tests](Versions.scala)
+trait Tests  extends CrossSbtModule with WithPropertyFile with WithDependencyResourceFile
+    with SparkTestsJvm {
+  def propertyFilePath       = os.sub / "ammonite/ammonite-spark.properties"
+  def versionInProperties    = core().publishVersion()
+  def dependencyResourcePath = os.sub / "ammonite/spark/amm-test-dependencies.txt"
+
+  def mvnDeps = super.mvnDeps() ++ Seq(
+    Deps.ammoniteCompiler.exclude(("com.google.guava", "guava")),
+    Deps.ammoniteRepl.exclude(("com.google.guava", "guava")),
+    Deps.slf4jLog4j12,
+    Deps.utest
+  )
+
+  object test extends CrossSbtTests with AmmSparkTests
+}
+
+object `local-spark-distrib-tests` extends SbtModule with SparkTestsJvm {
+  private def sv   = Versions.scala212
+  def scalaVersion = sv
+  def moduleDeps = super.moduleDeps ++ Seq(
+    tests(sv)
+  )
+
+  object test extends SbtTests with AmmSparkTests {
+    def forkEnv = super.forkEnv() ++ Seq(
+      "SPARK_HOME"    -> sparkHome().path.toString,
+      "SPARK_VERSION" -> sparkVersion()
+    )
+  }
+}
+
+object `standalone-tests` extends SbtModule with SparkTestsJvm {
+  private def sv   = Versions.scala212
+  def scalaVersion = sv
+  def moduleDeps = super.moduleDeps ++ Seq(
+    tests(sv)
+  )
+
+  object test extends SbtTests with AmmSparkTests {
+    def forkEnv = Task {
+      // Bring up the standalone master and worker before running the tests.
+      sparkSlave()
+      super.forkEnv() ++ Seq(
+        "SPARK_HOME"               -> sparkHome().path.toString,
+        "STANDALONE_SPARK_MASTER"  -> sparkMaster().master,
+        "STANDALONE_SPARK_VERSION" -> sparkVersion()
+      )
+    }
+  }
+}
+
+object `yarn-tests` extends Cross[YarnTests](Versions.scala)
+trait YarnTests extends CrossSbtModule with SparkTestsJvm {
+  def moduleDeps = super.moduleDeps ++ Seq(
+    tests()
+  )
+
+  object test extends CrossSbtTests with AmmSparkTests with RunClasspathAsJars
+}
+
+object `yarn-spark-distrib-tests` extends SbtModule with SparkTestsJvm {
+  private def sv   = Versions.scala212
+  def scalaVersion = sv
+  def moduleDeps = super.moduleDeps ++ Seq(
+    tests(sv)
+  )
+
+  object test extends SbtTests with AmmSparkTests with RunClasspathAsJars {
+    def forkEnv = super.forkEnv() ++ Seq(
+      "SPARK_HOME"    -> sparkHome().path.toString,
+      "SPARK_VERSION" -> sparkVersion()
+    )
+  }
+}
+
+object `almond-spark` extends Cross[AlmondSpark](Versions.scala)
+trait AlmondSpark     extends CrossSbtModule with AmmSparkPublishModule
+    with AmmSparkMima {
+  def moduleDeps = super.moduleDeps ++ Seq(
+    core()
+  )
+  def mvnDeps = super.mvnDeps() ++ Seq(
+    Deps.jsoniterScalaCore,
+    Deps.scalatags
+  )
+  def compileMvnDeps = super.compileMvnDeps() ++ Seq(
+    Deps.ammoniteReplApi,
+    Deps.jsoniterScalaMacros,
+    Deps.log4j2,
+    Deps.scalaKernelApi
+      .exclude(("com.lihaoyi", s"ammonite-compiler_$crossScalaVersion"))
+      .exclude(("com.lihaoyi", s"ammonite-repl-api_$crossScalaVersion")),
+    Deps.sparkSql(scalaVersion())
+  )
+  def repositories = super.repositories() ++ Seq(
+    "jitpack"
+  )
+}
+
+object `almond-toree-spark` extends Cross[AlmondToreeSpark](Versions.scala)
+trait AlmondToreeSpark extends CrossSbtModule with AmmSparkPublishModule with AmmSparkMima {
+  def moduleDeps = super.moduleDeps ++ Seq(
+    `almond-spark`()
+  )
+  def mvnDeps = super.mvnDeps() ++ Seq(
+    Deps.almondToreeHooks
+  )
+  def compileMvnDeps = super.compileMvnDeps() ++ Seq(
+    Deps.scalaKernelApi
+      .exclude(("com.lihaoyi", s"ammonite-compiler_$crossScalaVersion"))
+      .exclude(("com.lihaoyi", s"ammonite-repl-api_$crossScalaVersion")),
+    Deps.sparkSql(scalaVersion())
+  )
+  def repositories = super.repositories() ++ Seq(
+    "jitpack"
+  )
+}

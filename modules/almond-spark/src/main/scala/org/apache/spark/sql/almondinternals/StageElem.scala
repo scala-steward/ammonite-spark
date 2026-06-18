@@ -83,12 +83,12 @@ final class StageElem(
       val diff       = startedTasks0 - doneTasks0
       val startedPct = math.round(100.0 * (startedTasks0 - doneTasks0).toDouble / numTasks).toInt
 
+      val extraStylePart = extraStyle.mkString("; ")
+      val diffPart       = if (diff == 0) "" else s" + $diff"
       publish.updateHtml(
         s"""<div class="progress">
-           |  <div class="progress-bar" role="progressbar" style="background-color: blue; width: $donePct%; ${extraStyle.mkString(
-            "; "
-          )}; color: white" aria-valuenow="$donePct" aria-valuemin="0" aria-valuemax="100">
-           |    $doneTasks0${if (diff == 0) "" else s" + $diff"} / $numTasks
+           |  <div class="progress-bar" role="progressbar" style="background-color: blue; width: $donePct%; $extraStylePart; color: white" aria-valuenow="$donePct" aria-valuemin="0" aria-valuemax="100">
+           |    $doneTasks0$diffPart / $numTasks
            |  </div>
            |  <div class="progress-bar" role="progressbar" style="background-color: red; width: $startedPct%" aria-valuenow="$startedPct" aria-valuemin="0" aria-valuemax="100"></div>
            |</div>

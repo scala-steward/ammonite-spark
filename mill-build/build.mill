@@ -1,0 +1,8 @@
+import mill.meta.MillBuildRootModule
+import mill.scalalib.*
+
+object `package` extends MillBuildRootModule {
+  def mvnDeps = Seq(
+    mvn"com.github.lolgab::mill-mima_mill1:0.2.1"
+  )
+}

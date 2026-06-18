@@ -1,8 +1,16 @@
 package ammonite.spark
 
+import utest._
+
 // Temporarily disabled, until we can (either or both)
 // - enable the hadoop-2.7 profile (and excluding the remaining hadoop 3 dependencies?) when fetching Spark dependencies
 // - update the docker-based hadoop setup in the tests to hadoop 3
+
+object Yarn32Tests extends TestSuite {
+  def tests = Tests {
+    test("empty") {}
+  }
+}
 
 // object Yarn32Tests extends SparkReplTests(
 //   SparkVersions.latest32,
