@@ -59,3 +59,23 @@ jobs:
         submodules: true
     - uses: coursier/setup-action@v3
     - run: cs launch scalafmt -- --check
+
+  publish:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+        submodules: true
+    - uses: coursier/cache-action@v8.1
+    - uses: coursier/setup-action@v3.0
+      with:
+        jvm: 21
+    - name: Release
+      run: ./mill -i mill.scalalib.SonatypeCentralPublishModule/
+      env:
+        MILL_PGP_SECRET_BASE64: ${{ secrets.PUBLISH_SECRET_KEY }}
+        MILL_PGP_PASSPHRASE: ${{ secrets.PUBLISH_SECRET_KEY_PASSWORD }}
+        MILL_SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+        MILL_SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
