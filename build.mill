@@ -54,7 +54,12 @@ object Deps {
     mvn"com.github.plokhotnyuk.jsoniter-scala::jsoniter-scala-core:${Versions.jsoniterScala}"
   def jsoniterScalaMacros =
     mvn"com.github.plokhotnyuk.jsoniter-scala::jsoniter-scala-macros:${Versions.jsoniterScala}"
-  def log4j2         = mvn"org.apache.logging.log4j:log4j-core:2.17.2"
+  def log4j2 = mvn"org.apache.logging.log4j:log4j-core:2.17.2"
+  // slf4j -> log4j 1.x binding, matching the log4j.properties used by the tests.
+  // Having it on the tests classpath ensures slf4j binds to log4j at startup,
+  // rather than to the NOP logger - in particular for the spark-distrib tests,
+  // where Spark (and its own slf4j binding) is only loaded later from SPARK_HOME.
+  def slf4jLog4j12   = mvn"org.slf4j:slf4j-log4j12:1.7.36"
   def scalaKernelApi = mvn"sh.almond:::scala-kernel-api:${Versions.almond}"
   def scalatags      = mvn"com.lihaoyi::scalatags:0.12.0"
   def sparkSql(sv: String) = {
@@ -70,15 +75,20 @@ object Deps {
 
 trait AmmSparkPublishModule extends PublishModule {
   import mill.scalalib.publish.*
-  def publishVersion = Task {
-    val v        = VcsVersion.vcsState().format()
-    val dirtyIdx = v.indexOf("-DIRTY")
-    def endsWithCommitHash =
-      v.length > 6 && v.substring(v.length - 6).forall(c => c.isDigit || (c >= 'a' && c <= 'f'))
-    if (dirtyIdx >= 0) v.take(dirtyIdx) + "-SNAPSHOT"
-    else if (endsWithCommitHash) v + "-SNAPSHOT"
-    else v
-  }
+  def publishVersion =
+    sys.env.get("AMMONITE_SPARK_FORCED_VERSION") match {
+      case Some(forcedVersion) => Task(forcedVersion)
+      case None =>
+        Task {
+          val v        = VcsVersion.vcsState().format()
+          val dirtyIdx = v.indexOf("-DIRTY")
+          def endsWithCommitHash = v.length > 6 &&
+            v.substring(v.length - 6).forall(c => c.isDigit || (c >= 'a' && c <= 'f'))
+          if (dirtyIdx >= 0) v.take(dirtyIdx) + "-SNAPSHOT"
+          else if (endsWithCommitHash) v + "-SNAPSHOT"
+          else v
+        }
+    }
   def pomSettings = PomSettings(
     description = artifactName(),
     organization = "sh.almond",
@@ -107,6 +117,13 @@ trait AmmSparkMima extends PublishModule with Mima {
   }
 }
 
+private def commitHash(): String =
+  sys.env.getOrElse(
+    "AMMONITE_SPARK_FORCED_COMMIT_HASH",
+    os.proc("git", "rev-parse", "HEAD")
+      .call(cwd = BuildCtx.workspaceRoot).out.trim()
+  )
+
 trait WithPropertyFile extends JavaModule {
   def versionInProperties: T[String]
   def propertyFilePath: os.SubPath
@@ -119,7 +136,7 @@ trait WithPropertyFile extends JavaModule {
     val f = dir / propertyFilePath
 
     val contentStr =
-      s"""commit-hash=${Seq("git", "rev-parse", "HEAD").!!.trim}
+      s"""commit-hash=${commitHash()}
          |version=$ver
          |""".stripMargin
 
@@ -218,7 +235,7 @@ trait Core  extends CrossSbtModule with WithPropertyFile with AmmSparkPublishMod
       dir / "org/apache/spark/sql/ammonitesparkinternals/ammonite-spark.properties"
 
     val contentStr =
-      s"""commit-hash=${Seq("git", "rev-parse", "HEAD").!!.trim}
+      s"""commit-hash=${commitHash()}
          |version=$ver
          |""".stripMargin
 
@@ -390,6 +407,25 @@ def testRepo = Task {
   PathRef(dest)
 }
 
+trait RunClasspathAsJars extends JavaModule {
+  // ammonite-spark ships the REPL's runtime classpath to the Spark executors via
+  // sc.addJar, which only accepts JARs - directory entries are rejected with
+  // "Failed to add file:.../classes/ to Spark environment". Repackage every
+  // directory on the run classpath into a JAR so the whole classpath is JARs.
+  def runClasspath = Task {
+    super.runClasspath().zipWithIndex.map {
+      case (ref, idx) =>
+        if (os.isDir(ref.path)) {
+          val jar = Task.dest / s"run-$idx-${ref.path.last}.jar"
+          mill.util.Jvm.createJar(jar, Seq(ref.path))
+          PathRef(jar)
+        }
+        else
+          ref
+    }
+  }
+}
+
 trait AmmSparkTests extends TestModule {
   def testFramework = "utest.runner.Framework"
   def forkArgs =
@@ -441,6 +477,7 @@ trait Tests  extends CrossSbtModule with WithPropertyFile with WithDependencyRes
   def mvnDeps = super.mvnDeps() ++ Seq(
     Deps.ammoniteCompiler.exclude(("com.google.guava", "guava")),
     Deps.ammoniteRepl.exclude(("com.google.guava", "guava")),
+    Deps.slf4jLog4j12,
     Deps.utest
   )
 
@@ -488,7 +525,7 @@ trait YarnTests extends CrossSbtModule with SparkTestsJvm {
     tests()
   )
 
-  object test extends CrossSbtTests with AmmSparkTests
+  object test extends CrossSbtTests with AmmSparkTests with RunClasspathAsJars
 }
 
 object `yarn-spark-distrib-tests` extends SbtModule with SparkTestsJvm {
@@ -498,7 +535,12 @@ object `yarn-spark-distrib-tests` extends SbtModule with SparkTestsJvm {
     tests(sv)
   )
 
-  object test extends SbtTests with AmmSparkTests
+  object test extends SbtTests with AmmSparkTests with RunClasspathAsJars {
+    def forkEnv = super.forkEnv() ++ Seq(
+      "SPARK_HOME"    -> sparkHome().path.toString,
+      "SPARK_VERSION" -> sparkVersion()
+    )
+  }
 }
 
 object `almond-spark` extends Cross[AlmondSpark](Versions.scala)

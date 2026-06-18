@@ -6,6 +6,13 @@ object Init {
 
   private def q = "\""
 
+  // Extra Spark config injected into every session. SPARK_DRIVER_HOST is set by
+  // the dockerized YARN test runner so that the ApplicationMaster can reach the
+  // driver back (see mill-in-docker-with-yarn-cluster.sh). Empty for the local
+  // and standalone tests, where the variable isn't set.
+  private def extraConf: Seq[(String, String)] =
+    sys.env.get("SPARK_DRIVER_HOST").toSeq.map(h => "spark.driver.host" -> h)
+
   def init(
     master: String,
     sparkVersion: String,
@@ -29,7 +36,7 @@ object Init {
 
             @ assert(org.apache.spark.SPARK_VERSION == "$sparkVersion") // sanity check
 
-            @ val spark = AmmoniteSparkSession.builder()${prependBuilderCalls.mkString}.appName("test-ammonite-spark").master("$master")${conf.map(
+            @ val spark = AmmoniteSparkSession.builder()${prependBuilderCalls.mkString}.appName("test-ammonite-spark").master("$master")${(conf ++ extraConf).map(
             t => s".config($q${t._1}$q, $q${t._2}$q)"
           ).mkString}.getOrCreate()
 
@@ -56,7 +63,7 @@ object Init {
        |
        |assert(org.apache.spark.SPARK_VERSION == "$sparkVersion") // sanity check
        |
-       |val spark = AmmoniteSparkSession.builder()${prependBuilderCalls.mkString}.appName("test-ammonite-spark").master("$master")${conf.map(
+       |val spark = AmmoniteSparkSession.builder()${prependBuilderCalls.mkString}.appName("test-ammonite-spark").master("$master")${(conf ++ extraConf).map(
         t => s".config($q${t._1}$q, $q${t._2}$q)"
       ).mkString}.getOrCreate()
        |def sc = spark.sparkContext
@@ -96,6 +103,12 @@ object Init {
       .getResource(resource)
       .toURI
       .toASCIIString
+
+    // Force slf4j to bind now (to the log4j 1.x backend on the tests classpath),
+    // before the spark-distrib tests load Spark - and its own slf4j jars - from
+    // SPARK_HOME. Otherwise slf4j would have already defaulted to the NOP logger,
+    // silently dropping all the Spark logs.
+    org.slf4j.LoggerFactory.getLogger("ammonite.spark").debug("slf4j logging initialized")
   }
 
 }
