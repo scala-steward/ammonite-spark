@@ -19,7 +19,7 @@ object Deps {
   // Having it on the tests classpath ensures slf4j binds to log4j at startup,
   // rather than to the NOP logger - in particular for the spark-distrib tests,
   // where Spark (and its own slf4j binding) is only loaded later from SPARK_HOME.
-  def slf4jLog4j12   = mvn"org.slf4j:slf4j-log4j12:1.7.36"
+  def slf4jLog4j12   = mvn"org.slf4j:slf4j-log4j12:2.0.18"
   def scalaKernelApi = mvn"sh.almond:::scala-kernel-api:${Versions.almond}"
   def scalatags      = mvn"com.lihaoyi::scalatags:0.13.1"
   def sparkSql(sv: String) = {
